@@ -1,0 +1,13 @@
+# GCP Configuration
+# Project ID: pocker-487519
+# Region: us-central1
+# Cluster: poker-cluster
+
+export PROJECT_ID="pocker-487519"
+export REGION="us-central1"
+export CLUSTER_NAME="poker-cluster"
+export IMAGE_NAME="gcr.io/pocker-487519/poker-backend:latest"
+
+# Usage:
+# source .gcp-config
+# Then run: ./deploy.sh
