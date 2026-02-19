@@ -16,7 +16,8 @@ spec:
     spec:
       containers:
       - name: poker-backend
-        image: us-central1-docker.pkg.dev/pocker-487519/poker-repo/poker-backend:latest
+        image: us-central1-docker.pkg.dev/pocker-487519/poker-repo/poker-backend:v3
+        imagePullPolicy: Always
         ports:
         - containerPort: 8080
         env:

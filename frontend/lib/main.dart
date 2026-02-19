@@ -231,23 +231,53 @@ class PlayingCard extends StatelessWidget {
   }
 }
 
+enum PokerMode { evaluate, compare, probability }
+
 class _PokerHomePageState extends State<PokerHomePage> {
   // Use localhost for development, GKE IP for production
   final String apiUrl = kDebugMode 
       ? 'http://localhost:8080'
       : 'http://136.113.179.68';
   
+  // Current mode
+  PokerMode _mode = PokerMode.compare;
+  
+  // Single player hole cards (for evaluate and probability modes)
   final TextEditingController _holeCard1Controller = TextEditingController();
   final TextEditingController _holeCard2Controller = TextEditingController();
+  
+  // Player 1 hole cards (for compare mode)
+  final TextEditingController _p1HoleCard1Controller = TextEditingController();
+  final TextEditingController _p1HoleCard2Controller = TextEditingController();
+  
+  // Player 2 hole cards (for compare mode)
+  final TextEditingController _p2HoleCard1Controller = TextEditingController();
+  final TextEditingController _p2HoleCard2Controller = TextEditingController();
+  
+  // Community cards
   final TextEditingController _flop1Controller = TextEditingController();
   final TextEditingController _flop2Controller = TextEditingController();
   final TextEditingController _flop3Controller = TextEditingController();
   final TextEditingController _turnController = TextEditingController();
   final TextEditingController _riverController = TextEditingController();
-  final TextEditingController _numPlayersController = TextEditingController(text: '6');
-  final TextEditingController _simulationsController = TextEditingController(text: '1000');
   
+  // Probability mode settings
+  final TextEditingController _numPlayersController = TextEditingController(text: '6');
+  final TextEditingController _simulationsController = TextEditingController(text: '10000');
+  
+  // Results
   String _result = '';
+  String _player1Hand = '';
+  String _player2Hand = '';
+  List<String> _player1Cards = [];
+  List<String> _player2Cards = [];
+  String _winner = '';
+  String _evaluatedHand = '';
+  String _evaluatedHandRank = '';
+  List<String> _evaluatedCards = [];
+  double _winProbability = 0.0;
+  double _tieProbability = 0.0;
+  double _lossProbability = 0.0;
   bool _loading = false;
 
   @override
@@ -256,6 +286,10 @@ class _PokerHomePageState extends State<PokerHomePage> {
     // Add listeners to controllers to trigger rebuild when cards change
     _holeCard1Controller.addListener(() => setState(() {}));
     _holeCard2Controller.addListener(() => setState(() {}));
+    _p1HoleCard1Controller.addListener(() => setState(() {}));
+    _p1HoleCard2Controller.addListener(() => setState(() {}));
+    _p2HoleCard1Controller.addListener(() => setState(() {}));
+    _p2HoleCard2Controller.addListener(() => setState(() {}));
     _flop1Controller.addListener(() => setState(() {}));
     _flop2Controller.addListener(() => setState(() {}));
     _flop3Controller.addListener(() => setState(() {}));
@@ -267,6 +301,10 @@ class _PokerHomePageState extends State<PokerHomePage> {
   void dispose() {
     _holeCard1Controller.dispose();
     _holeCard2Controller.dispose();
+    _p1HoleCard1Controller.dispose();
+    _p1HoleCard2Controller.dispose();
+    _p2HoleCard1Controller.dispose();
+    _p2HoleCard2Controller.dispose();
     _flop1Controller.dispose();
     _flop2Controller.dispose();
     _flop3Controller.dispose();
@@ -311,25 +349,168 @@ class _PokerHomePageState extends State<PokerHomePage> {
     };
   }
 
-  Future<void> evaluateHand() async {
+  // Show error dialog with appropriate message
+  void _showErrorDialog(String title, String message, {IconData? icon}) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          backgroundColor: const Color(0xFF1C2833),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: const BorderSide(color: Color(0xFFF44336), width: 2),
+          ),
+          title: Row(
+            children: [
+              Icon(
+                icon ?? Icons.error_outline,
+                color: const Color(0xFFF44336),
+                size: 32,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  title,
+                  style: const TextStyle(
+                    color: Color(0xFFF44336),
+                    fontWeight: FontWeight.bold,
+                    fontSize: 20,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: Text(
+            message,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              style: TextButton.styleFrom(
+                backgroundColor: const Color(0xFF00E5FF),
+                foregroundColor: const Color(0xFF0A1929),
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(8),
+                ),
+              ),
+              child: const Text(
+                'OK',
+                style: TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  // Validate card format
+  bool _isValidCard(String card) {
+    if (card.isEmpty) return true; // Empty is ok for community cards
+    if (card.length != 2) return false;
+    
+    final suit = card[0].toUpperCase();
+    final rank = card[1].toUpperCase();
+    
+    final validSuits = ['H', 'D', 'C', 'S'];
+    final validRanks = ['2', '3', '4', '5', '6', '7', '8', '9', 'T', 'J', 'Q', 'K', 'A'];
+    
+    return validSuits.contains(suit) && validRanks.contains(rank);
+  }
+
+  // Validate hole cards are provided
+  bool _validateHoleCards(TextEditingController card1, TextEditingController card2, {String playerName = ''}) {
+    if (card1.text.isEmpty || card2.text.isEmpty) {
+      _showErrorDialog(
+        'Missing Cards',
+        '${playerName.isEmpty ? "Both" : "$playerName"} hole cards are required.',
+        icon: Icons.credit_card_off,
+      );
+      return false;
+    }
+    
+    if (!_isValidCard(card1.text) || !_isValidCard(card2.text)) {
+      _showErrorDialog(
+        'Invalid Card Format',
+        'Cards must be 2 characters: first letter is suit (H/D/C/S), second is rank (2-9/T/J/Q/K/A).\nExample: HA (Heart Ace), S7 (Spade 7)',
+        icon: Icons.format_clear,
+      );
+      return false;
+    }
+    
+    return true;
+  }
+
+  // Validate community cards format
+  bool _validateCommunityCards() {
+    final cards = [
+      _flop1Controller.text,
+      _flop2Controller.text,
+      _flop3Controller.text,
+      _turnController.text,
+      _riverController.text,
+    ];
+    
+    for (final card in cards) {
+      if (!_isValidCard(card)) {
+        _showErrorDialog(
+          'Invalid Card Format',
+          'Invalid community card: "$card"\nCards must be 2 characters: first letter is suit (H/D/C/S), second is rank (2-9/T/J/Q/K/A)',
+          icon: Icons.format_clear,
+        );
+        return false;
+      }
+    }
+    
+    return true;
+  }
+
+  Future<void> compareHands() async {
+    // Validate inputs
+    if (!_validateHoleCards(_p1HoleCard1Controller, _p1HoleCard2Controller, playerName: 'Player 1')) {
+      return;
+    }
+    if (!_validateHoleCards(_p2HoleCard1Controller, _p2HoleCard2Controller, playerName: 'Player 2')) {
+      return;
+    }
+    if (!_validateCommunityCards()) {
+      return;
+    }
+
     setState(() {
       _loading = true;
       _result = '';
+      _player1Hand = '';
+      _player2Hand = '';
+      _winner = '';
     });
 
     try {
       final response = await http.post(
-        Uri.parse('$apiUrl/api/evaluate'),
+        Uri.parse('$apiUrl/api/compare'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'holeCards': [_holeCard1Controller.text, _holeCard2Controller.text],
-          'communityCards': [
+          'player1HoleCards': [_p1HoleCard1Controller.text.toUpperCase(), _p1HoleCard2Controller.text.toUpperCase()],
+          'player1CommunityCards': [
             _flop1Controller.text,
             _flop2Controller.text,
             _flop3Controller.text,
             _turnController.text,
             _riverController.text,
-          ].where((c) => c.isNotEmpty).toList(),
+          ].where((c) => c.isNotEmpty).map((c) => c.toUpperCase()).toList(),
+          'player2HoleCards': [_p2HoleCard1Controller.text.toUpperCase(), _p2HoleCard2Controller.text.toUpperCase()],
+          'player2CommunityCards': [
+            _flop1Controller.text,
+            _flop2Controller.text,
+            _flop3Controller.text,
+            _turnController.text,
+            _riverController.text,
+          ].where((c) => c.isNotEmpty).map((c) => c.toUpperCase()).toList(),
         }),
       );
 
@@ -337,24 +518,260 @@ class _PokerHomePageState extends State<PokerHomePage> {
         final data = jsonDecode(response.body);
         if (data['success']) {
           setState(() {
-            _result = 'Hand: ${data['handRank']}\n'
-                'Description: ${data['description']}\n'
-                'Best 5 cards: ${(data['cards'] as List).join(', ')}';
+            _player1Hand = data['player1Description'] ?? 'Unknown hand';
+            _player2Hand = data['player2Description'] ?? 'Unknown hand';
+            _player1Cards = List<String>.from(data['player1Cards'] ?? []);
+            _player2Cards = List<String>.from(data['player2Cards'] ?? []);
+            _winner = data['winner'];
+            
+            String winnerText;
+            if (_winner == 'player1') {
+              winnerText = '🏆 PLAYER 1 WINS!';
+            } else if (_winner == 'player2') {
+              winnerText = '🏆 PLAYER 2 WINS!';
+            } else {
+              winnerText = '🤝 TIE - SPLIT POT!';
+            }
+            
+            _result = winnerText;
           });
         } else {
           setState(() {
-            _result = 'Error: ${data['error']}';
+            _result = '';
+            _player1Hand = '';
+            _player2Hand = '';
+            _player1Cards = [];
+            _player2Cards = [];
+            _winner = '';
           });
+          _showErrorDialog(
+            'Comparison Failed',
+            data['error'] ?? 'Unknown error occurred',
+            icon: Icons.error,
+          );
         }
+      } else if (response.statusCode == 400) {
+        setState(() {
+          _result = '';
+          _player1Hand = '';
+          _player2Hand = '';
+          _player1Cards = [];
+          _player2Cards = [];
+          _winner = '';
+        });
+        final data = jsonDecode(response.body);
+        _showErrorDialog(
+          'Invalid Input',
+          data['error'] ?? 'Invalid card data provided',
+          icon: Icons.warning,
+        );
+      } else if (response.statusCode >= 500) {
+        setState(() {
+          _result = '';
+          _player1Hand = '';
+          _player2Hand = '';
+          _player1Cards = [];
+          _player2Cards = [];
+          _winner = '';
+        });
+        _showErrorDialog(
+          'Server Error',
+          'The server encountered an error. Please try again later.',
+          icon: Icons.cloud_off,
+        );
       } else {
         setState(() {
-          _result = 'Error: ${response.statusCode}';
+          _result = '';
+          _player1Hand = '';
+          _player2Hand = '';
+          _player1Cards = [];
+          _player2Cards = [];
+          _winner = '';
         });
+        _showErrorDialog(
+          'Request Failed',
+          'Unable to process your request. Please check your input and try again.',
+          icon: Icons.error_outline,
+        );
       }
+    } on http.ClientException {
+      setState(() {
+        _result = '';
+        _player1Hand = '';
+        _player2Hand = '';
+        _player1Cards = [];
+        _player2Cards = [];
+        _winner = '';
+      });
+      _showErrorDialog(
+        'Connection Failed',
+        'Cannot connect to server. Please check your internet connection.',
+        icon: Icons.wifi_off,
+      );
+    } on FormatException {
+      setState(() {
+        _result = '';
+        _player1Hand = '';
+        _player2Hand = '';
+        _player1Cards = [];
+        _player2Cards = [];
+        _winner = '';
+      });
+      _showErrorDialog(
+        'Invalid Response',
+        'Received invalid data from server. Please try again.',
+        icon: Icons.data_usage,
+      );
     } catch (e) {
       setState(() {
-        _result = 'Error: $e';
+        _result = '';
+        _player1Hand = '';
+        _player2Hand = '';
+        _player1Cards = [];
+        _player2Cards = [];
+        _winner = '';
       });
+      _showErrorDialog(
+        'Unexpected Error',
+        'Something went wrong. Please try again or contact support if the problem persists.',
+        icon: Icons.error_outline,
+      );
+    } finally {
+      setState(() {
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> evaluateHand() async {
+    // Validate inputs
+    if (!_validateHoleCards(_holeCard1Controller, _holeCard2Controller)) {
+      return;
+    }
+    if (!_validateCommunityCards()) {
+      return;
+    }
+
+    setState(() {
+      _loading = true;
+      _result = '';
+      _evaluatedHand = '';
+      _evaluatedHandRank = '';
+      _evaluatedCards = [];
+    });
+
+    try {
+      final response = await http.post(
+        Uri.parse('$apiUrl/api/evaluate'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'holeCards': [_holeCard1Controller.text.toUpperCase(), _holeCard2Controller.text.toUpperCase()],
+          'communityCards': [
+            _flop1Controller.text,
+            _flop2Controller.text,
+            _flop3Controller.text,
+            _turnController.text,
+            _riverController.text,
+          ].where((c) => c.isNotEmpty).map((c) => c.toUpperCase()).toList(),
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        if (data['success']) {
+          setState(() {
+            _evaluatedHandRank = data['handRank'] ?? 'Unknown';
+            _evaluatedHand = data['description'] ?? 'Unknown hand';
+            _evaluatedCards = List<String>.from(data['cards'] ?? []);
+            _result = _evaluatedHandRank;
+          });
+        } else {
+          setState(() {
+            _result = '';
+            _evaluatedHand = '';
+            _evaluatedHandRank = '';
+            _evaluatedCards = [];
+          });
+          _showErrorDialog(
+            'Evaluation Failed',
+            data['error'] ?? 'Unknown error occurred',
+            icon: Icons.error,
+          );
+        }
+      } else if (response.statusCode == 400) {
+        setState(() {
+          _result = '';
+          _evaluatedHand = '';
+          _evaluatedHandRank = '';
+          _evaluatedCards = [];
+        });
+        final data = jsonDecode(response.body);
+        _showErrorDialog(
+          'Invalid Input',
+          data['error'] ?? 'Invalid card data provided',
+          icon: Icons.warning,
+        );
+      } else if (response.statusCode >= 500) {
+        setState(() {
+          _result = '';
+          _evaluatedHand = '';
+          _evaluatedHandRank = '';
+          _evaluatedCards = [];
+        });
+        _showErrorDialog(
+          'Server Error',
+          'The server encountered an error. Please try again later.',
+          icon: Icons.cloud_off,
+        );
+      } else {
+        setState(() {
+          _result = '';
+          _evaluatedHand = '';
+          _evaluatedHandRank = '';
+          _evaluatedCards = [];
+        });
+        _showErrorDialog(
+          'Request Failed',
+          'Unable to process your request. Please check your input and try again.',
+          icon: Icons.error_outline,
+        );
+      }
+    } on http.ClientException {
+      setState(() {
+        _result = '';
+        _evaluatedHand = '';
+        _evaluatedHandRank = '';
+        _evaluatedCards = [];
+      });
+      _showErrorDialog(
+        'Connection Failed',
+        'Cannot connect to server. Please check your internet connection.',
+        icon: Icons.wifi_off,
+      );
+    } on FormatException {
+      setState(() {
+        _result = '';
+        _evaluatedHand = '';
+        _evaluatedHandRank = '';
+        _evaluatedCards = [];
+      });
+      _showErrorDialog(
+        'Invalid Response',
+        'Received invalid data from server. Please try again.',
+        icon: Icons.data_usage,
+      );
+    } catch (e) {
+      setState(() {
+        _result = '';
+        _evaluatedHand = '';
+        _evaluatedHandRank = '';
+        _evaluatedCards = [];
+      });
+      _showErrorDialog(
+        'Unexpected Error',
+        'Something went wrong. Please try again or contact support if the problem persists.',
+        icon: Icons.error_outline,
+      );
     } finally {
       setState(() {
         _loading = false;
@@ -363,9 +780,42 @@ class _PokerHomePageState extends State<PokerHomePage> {
   }
 
   Future<void> calculateProbability() async {
+    // Validate inputs
+    if (!_validateHoleCards(_holeCard1Controller, _holeCard2Controller)) {
+      return;
+    }
+    if (!_validateCommunityCards()) {
+      return;
+    }
+
+    // Validate settings
+    final numPlayers = int.tryParse(_numPlayersController.text);
+    final simulations = int.tryParse(_simulationsController.text);
+
+    if (numPlayers == null || numPlayers < 2 || numPlayers > 10) {
+      _showErrorDialog(
+        'Invalid Number of Players',
+        'Number of players must be between 2 and 10.',
+        icon: Icons.group,
+      );
+      return;
+    }
+
+    if (simulations == null || simulations < 100 || simulations > 1000000) {
+      _showErrorDialog(
+        'Invalid Simulations',
+        'Number of simulations must be between 100 and 1,000,000.',
+        icon: Icons.calculate,
+      );
+      return;
+    }
+
     setState(() {
       _loading = true;
       _result = '';
+      _winProbability = 0.0;
+      _tieProbability = 0.0;
+      _lossProbability = 0.0;
     });
 
     try {
@@ -373,45 +823,115 @@ class _PokerHomePageState extends State<PokerHomePage> {
         Uri.parse('$apiUrl/api/probability'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'holeCards': [_holeCard1Controller.text, _holeCard2Controller.text],
+          'holeCards': [_holeCard1Controller.text.toUpperCase(), _holeCard2Controller.text.toUpperCase()],
           'communityCards': [
             _flop1Controller.text,
             _flop2Controller.text,
             _flop3Controller.text,
             _turnController.text,
             _riverController.text,
-          ].where((c) => c.isNotEmpty).toList(),
-          'numPlayers': int.parse(_numPlayersController.text),
-          'simulations': int.parse(_simulationsController.text),
+          ].where((c) => c.isNotEmpty).map((c) => c.toUpperCase()).toList(),
+          'numPlayers': numPlayers,
+          'simulations': simulations,
         }),
       );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         if (data['success']) {
-          final winProb = (data['winProbability'] * 100).toStringAsFixed(2);
-          final tieProb = (data['tieProbability'] * 100).toStringAsFixed(2);
-          final lossProb = (data['lossProbability'] * 100).toStringAsFixed(2);
           setState(() {
-            _result = 'Win Probability: $winProb%\n'
-                'Tie Probability: $tieProb%\n'
-                'Loss Probability: $lossProb%\n'
-                'Simulations: ${data['simulations']}';
+            _winProbability = data['winProbability'];
+            _tieProbability = data['tieProbability'];
+            _lossProbability = data['lossProbability'];
+            _result = 'Probability calculated with ${data['simulations']} simulations';
           });
         } else {
           setState(() {
-            _result = 'Error: ${data['error']}';
+            _result = '';
+            _winProbability = 0.0;
+            _tieProbability = 0.0;
+            _lossProbability = 0.0;
           });
+          _showErrorDialog(
+            'Calculation Failed',
+            data['error'] ?? 'Unknown error occurred',
+            icon: Icons.error,
+          );
         }
+      } else if (response.statusCode == 400) {
+        setState(() {
+          _result = '';
+          _winProbability = 0.0;
+          _tieProbability = 0.0;
+          _lossProbability = 0.0;
+        });
+        final data = jsonDecode(response.body);
+        _showErrorDialog(
+          'Invalid Input',
+          data['error'] ?? 'Invalid card data provided',
+          icon: Icons.warning,
+        );
+      } else if (response.statusCode >= 500) {
+        setState(() {
+          _result = '';
+          _winProbability = 0.0;
+          _tieProbability = 0.0;
+          _lossProbability = 0.0;
+        });
+        _showErrorDialog(
+          'Server Error',
+          'The server encountered an error. Please try again later.',
+          icon: Icons.cloud_off,
+        );
       } else {
         setState(() {
-          _result = 'Error: ${response.statusCode}';
+          _result = '';
+          _winProbability = 0.0;
+          _tieProbability = 0.0;
+          _lossProbability = 0.0;
         });
+        _showErrorDialog(
+          'Request Failed',
+          'Unable to process your request. Please check your input and try again.',
+          icon: Icons.error_outline,
+        );
       }
+    } on http.ClientException {
+      setState(() {
+        _result = '';
+        _winProbability = 0.0;
+        _tieProbability = 0.0;
+        _lossProbability = 0.0;
+      });
+      _showErrorDialog(
+        'Connection Failed',
+        'Cannot connect to server. Please check your internet connection.',
+        icon: Icons.wifi_off,
+      );
+    } on FormatException {
+      setState(() {
+        _result = '';
+        _winProbability = 0.0;
+        _tieProbability = 0.0;
+        _lossProbability = 0.0;
+      });
+      _showErrorDialog(
+        'Invalid Response',
+        'Received invalid data from server. Please try again.',
+        icon: Icons.data_usage,
+      );
     } catch (e) {
       setState(() {
-        _result = 'Error: $e';
+        _result = '';
+        _winProbability = 0.0;
+        _tieProbability = 0.0;
+        _lossProbability = 0.0;
       });
+      _showErrorDialog(
+        'Unexpected Error',
+        'Something went wrong. Please try again or contact support if the problem persists.',
+        icon: Icons.error_outline,
+      );
     } finally {
       setState(() {
         _loading = false;
@@ -441,7 +961,11 @@ class _PokerHomePageState extends State<PokerHomePage> {
               children: [
                 // Header
                 _buildHeader(),
-                const SizedBox(height: 32),
+                const SizedBox(height: 24),
+                
+                // Mode selector
+                _buildModeSelector(),
+                const SizedBox(height: 24),
                 
                 // Main poker table
                 _buildPokerTable(),
@@ -516,6 +1040,88 @@ class _PokerHomePageState extends State<PokerHomePage> {
     );
   }
 
+  Widget _buildModeSelector() {
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1C2833),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF00E5FF), width: 2),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _buildModeButton(
+              'EVALUATE',
+              PokerMode.evaluate,
+              Icons.assessment,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _buildModeButton(
+              'COMPARE',
+              PokerMode.compare,
+              Icons.compare_arrows,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: _buildModeButton(
+              'PROBABILITY',
+              PokerMode.probability,
+              Icons.show_chart,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModeButton(String label, PokerMode mode, IconData icon) {
+    final bool isSelected = _mode == mode;
+    return ElevatedButton(
+      onPressed: () {
+        setState(() {
+          _mode = mode;
+          _result = '';
+          _player1Hand = '';
+          _player2Hand = '';
+          _player1Cards = [];
+          _player2Cards = [];
+          _winner = '';
+          _evaluatedHand = '';
+          _evaluatedHandRank = '';
+          _evaluatedCards = [];
+          _winProbability = 0.0;
+          _tieProbability = 0.0;
+          _lossProbability = 0.0;
+        });
+      },
+      style: ElevatedButton.styleFrom(
+        backgroundColor: isSelected ? const Color(0xFF00E5FF) : const Color(0xFF0D1B2A),
+        foregroundColor: isSelected ? const Color(0xFF0A1929) : const Color(0xFFB0BEC5),
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        elevation: isSelected ? 8 : 2,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 24),
+          const SizedBox(height: 4),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildPokerTable() {
     return Container(
       padding: const EdgeInsets.all(32),
@@ -543,43 +1149,87 @@ class _PokerHomePageState extends State<PokerHomePage> {
       ),
       child: Column(
         children: [
-          // Hole cards section
-          _buildHoleCardsSection(),
+          if (_mode == PokerMode.evaluate) ...[
+            // Single player mode
+            _buildPlayerSection(
+              playerName: 'YOUR HAND',
+              card1Controller: _holeCard1Controller,
+              card2Controller: _holeCard2Controller,
+              color: const Color(0xFF00E5FF),
+              icon: Icons.person,
+            ),
+          ] else if (_mode == PokerMode.compare) ...[
+            // Player 1 hole cards
+            _buildPlayerSection(
+              playerName: 'PLAYER 1',
+              card1Controller: _p1HoleCard1Controller,
+              card2Controller: _p1HoleCard2Controller,
+              color: const Color(0xFF00E5FF),
+              icon: Icons.person,
+            ),
+            
+            const SizedBox(height: 24),
+            const Divider(color: Color(0xFF00E5FF), thickness: 2),
+            const SizedBox(height: 24),
+          ] else if (_mode == PokerMode.probability) ...[
+            // Single player mode for probability
+            _buildPlayerSection(
+              playerName: 'YOUR HAND',
+              card1Controller: _holeCard1Controller,
+              card2Controller: _holeCard2Controller,
+              color: const Color(0xFF00E5FF),
+              icon: Icons.person,
+            ),
+          ],
           
-          const SizedBox(height: 32),
-          const Divider(color: Color(0xFF00E5FF), thickness: 2),
-          const SizedBox(height: 32),
-          
-          // Community cards section
+          // Community cards section (all modes)
+          const SizedBox(height: 24),
           _buildCommunityCardsSection(),
           
-          const SizedBox(height: 32),
-          const Divider(color: Color(0xFF00E5FF), thickness: 2),
-          const SizedBox(height: 32),
-          
-          // Settings section
-          _buildSettingsSection(),
+          if (_mode == PokerMode.compare) ...[
+            const SizedBox(height: 24),
+            const Divider(color: Color(0xFF00E5FF), thickness: 2),
+            const SizedBox(height: 24),
+            
+            // Player 2 hole cards
+            _buildPlayerSection(
+              playerName: 'PLAYER 2',
+              card1Controller: _p2HoleCard1Controller,
+              card2Controller: _p2HoleCard2Controller,
+              color: const Color(0xFFFF5722),
+              icon: Icons.person_outline,
+            ),
+          ] else if (_mode == PokerMode.probability) ...[
+            const SizedBox(height: 24),
+            _buildProbabilitySettings(),
+          ],
         ],
       ),
     );
   }
 
-  Widget _buildHoleCardsSection() {
-    final card1 = parseCard(_holeCard1Controller.text);
-    final card2 = parseCard(_holeCard2Controller.text);
+  Widget _buildPlayerSection({
+    required String playerName,
+    required TextEditingController card1Controller,
+    required TextEditingController card2Controller,
+    required Color color,
+    required IconData icon,
+  }) {
+    final card1 = parseCard(card1Controller.text);
+    final card2 = parseCard(card2Controller.text);
 
     return Column(
       children: [
         Row(
           children: [
-            const Icon(Icons.person, color: Color(0xFF00E5FF), size: 24),
+            Icon(icon, color: color, size: 24),
             const SizedBox(width: 12),
             Text(
-              'YOUR HOLE CARDS',
+              playerName,
               style: TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.bold,
-                color: const Color(0xFF00E5FF),
+                color: color,
                 letterSpacing: 1.5,
               ),
             ),
@@ -611,7 +1261,7 @@ class _PokerHomePageState extends State<PokerHomePage> {
           children: [
             Expanded(
               child: _buildCardInput(
-                controller: _holeCard1Controller,
+                controller: card1Controller,
                 label: 'CARD 1',
                 hint: 'HA',
               ),
@@ -619,7 +1269,7 @@ class _PokerHomePageState extends State<PokerHomePage> {
             const SizedBox(width: 16),
             Expanded(
               child: _buildCardInput(
-                controller: _holeCard2Controller,
+                controller: card2Controller,
                 label: 'CARD 2',
                 hint: 'SK',
               ),
@@ -722,50 +1372,6 @@ class _PokerHomePageState extends State<PokerHomePage> {
     );
   }
 
-  Widget _buildSettingsSection() {
-    return Column(
-      children: [
-        Row(
-          children: [
-            const Icon(Icons.settings, color: Color(0xFF00E5FF), size: 24),
-            const SizedBox(width: 12),
-            Text(
-              'GAME SETTINGS',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: const Color(0xFF00E5FF),
-                letterSpacing: 1.5,
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        Row(
-          children: [
-            Expanded(
-              child: _buildCardInput(
-                controller: _numPlayersController,
-                label: 'PLAYERS',
-                hint: '6',
-                keyboardType: TextInputType.number,
-              ),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: _buildCardInput(
-                controller: _simulationsController,
-                label: 'SIMULATIONS',
-                hint: '1000',
-                keyboardType: TextInputType.number,
-              ),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-
   Widget _buildCardInput({
     required TextEditingController controller,
     required String label,
@@ -807,6 +1413,50 @@ class _PokerHomePageState extends State<PokerHomePage> {
     );
   }
 
+  Widget _buildProbabilitySettings() {
+    return Column(
+      children: [
+        const Divider(color: Color(0xFF00E5FF), thickness: 2),
+        const SizedBox(height: 24),
+        Row(
+          children: [
+            const Icon(Icons.settings, color: Color(0xFF00E5FF), size: 24),
+            const SizedBox(width: 12),
+            Text(
+              'SIMULATION SETTINGS',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: const Color(0xFF00E5FF),
+                letterSpacing: 1.5,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Row(
+          children: [
+            Expanded(
+              child: _buildCardInput(
+                controller: _numPlayersController,
+                label: 'PLAYERS',
+                hint: '2-10',
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _buildCardInput(
+                controller: _simulationsController,
+                label: 'SIMULATIONS',
+                hint: '10000',
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
   Widget _buildActionButtons() {
     return Column(
       children: [
@@ -820,33 +1470,45 @@ class _PokerHomePageState extends State<PokerHomePage> {
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: 20),
-        Wrap(
-          spacing: 16,
-          runSpacing: 16,
-          alignment: WrapAlignment.center,
-          children: [
-            ElevatedButton.icon(
-              onPressed: _loading ? null : evaluateHand,
-              icon: const Icon(Icons.casino, size: 24),
-              label: const Text('EVALUATE HAND'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF00E5FF),
-                foregroundColor: const Color(0xFF0A1929),
-                minimumSize: const Size(200, 56),
-              ),
+        if (_mode == PokerMode.evaluate)
+          ElevatedButton.icon(
+            onPressed: _loading ? null : evaluateHand,
+            icon: const Icon(Icons.assessment, size: 32),
+            label: const Text('EVALUATE HAND'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00E5FF),
+              foregroundColor: const Color(0xFF0A1929),
+              minimumSize: const Size(280, 64),
+              padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 20),
+              textStyle: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 2),
             ),
-            ElevatedButton.icon(
-              onPressed: _loading ? null : calculateProbability,
-              icon: const Icon(Icons.calculate, size: 24),
-              label: const Text('WIN PROBABILITY'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF7C4DFF),
-                foregroundColor: Colors.white,
-                minimumSize: const Size(200, 56),
-              ),
+          )
+        else if (_mode == PokerMode.compare)
+          ElevatedButton.icon(
+            onPressed: _loading ? null : compareHands,
+            icon: const Icon(Icons.compare_arrows, size: 32),
+            label: const Text('COMPARE HANDS'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00E5FF),
+              foregroundColor: const Color(0xFF0A1929),
+              minimumSize: const Size(280, 64),
+              padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 20),
+              textStyle: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 2),
             ),
-          ],
-        ),
+          )
+        else if (_mode == PokerMode.probability)
+          ElevatedButton.icon(
+            onPressed: _loading ? null : calculateProbability,
+            icon: const Icon(Icons.show_chart, size: 32),
+            label: const Text('CALCULATE PROBABILITY'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFF00E5FF),
+              foregroundColor: const Color(0xFF0A1929),
+              minimumSize: const Size(280, 64),
+              padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 20),
+              textStyle: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, letterSpacing: 2),
+            ),
+          ),
       ],
     );
   }
@@ -892,9 +1554,16 @@ class _PokerHomePageState extends State<PokerHomePage> {
   }
 
   Widget _buildResultCard() {
-    final lines = _result.split('\n');
-    final isEvaluation = _result.contains('Hand:');
-    
+    if (_mode == PokerMode.evaluate) {
+      return _buildEvaluateResult();
+    } else if (_mode == PokerMode.compare) {
+      return _buildCompareResult();
+    } else {
+      return _buildProbabilityResult();
+    }
+  }
+
+  Widget _buildEvaluateResult() {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(32),
@@ -921,90 +1590,411 @@ class _PokerHomePageState extends State<PokerHomePage> {
         ],
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [
-                      const Color(0xFF00E5FF),
-                      const Color(0xFF00BCD4),
-                    ],
-                  ),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  isEvaluation ? Icons.emoji_events : Icons.show_chart,
-                  color: const Color(0xFF0A1929),
-                  size: 32,
-                ),
-              ),
-              const SizedBox(width: 16),
-              Text(
-                isEvaluation ? 'HAND RESULT' : 'WIN PROBABILITY',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: const Color(0xFF00E5FF),
-                  letterSpacing: 2,
-                ),
-              ),
-            ],
+          Icon(Icons.assessment, size: 64, color: const Color(0xFF00E5FF)),
+          const SizedBox(height: 16),
+          Text(
+            'HAND EVALUATION',
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+              color: const Color(0xFF00E5FF),
+              letterSpacing: 2,
+            ),
           ),
           const SizedBox(height: 24),
-          ...lines.map((line) => Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: _buildResultLine(line),
-          )),
+          
+          // Hand Rank (e.g., "Three of a Kind")
+          Text(
+            _evaluatedHandRank,
+            style: const TextStyle(
+              fontSize: 32,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFFFFD700),
+              letterSpacing: 1,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          
+          // Best 5 Cards - Excel format style
+          if (_evaluatedCards.isNotEmpty) ...[
+            const SizedBox(height: 32),
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E3A5F),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: const Color(0xFF00E5FF).withOpacity(0.5),
+                  width: 2,
+                ),
+              ),
+              child: Column(
+                children: [
+                  Text(
+                    'Best 5-Card Hand',
+                    style: TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                      color: const Color(0xFF00E5FF),
+                      letterSpacing: 1,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  // Display cards in Excel format: "DK SK HT C8 C7"
+                  Wrap(
+                    spacing: 12,
+                    alignment: WrapAlignment.center,
+                    children: _evaluatedCards.map((card) => Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF0A1929),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: const Color(0xFF00E5FF).withOpacity(0.3),
+                          width: 1,
+                        ),
+                      ),
+                      child: Text(
+                        _convertToExcelFormat(card),
+                        style: const TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.white,
+                          letterSpacing: 1,
+                        ),
+                      ),
+                    )).toList(),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );
   }
 
-  Widget _buildResultLine(String line) {
-    final parts = line.split(':');
-    if (parts.length == 2) {
-      final label = parts[0].trim();
-      final value = parts[1].trim();
-      final isPercentage = value.contains('%');
-      
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  // Convert card from API format (♦K) to Excel format (DK)  
+  String _convertToExcelFormat(String card) {
+    final suitMap = {
+      '♥': 'H',
+      '♦': 'D',
+      '♣': 'C',
+      '♠': 'S',
+    };
+    
+    if (card.length >= 2) {
+      final suit = card.substring(0, 1);
+      final rank = card.substring(1);
+      return '${suitMap[suit] ?? suit}$rank';
+    }
+    return card;
+  }
+
+  Widget _buildCompareResult() {
+    Color winnerColor = _winner == 'player1' 
+        ? const Color(0xFF00E5FF)
+        : _winner == 'player2'
+            ? const Color(0xFFFF5722)
+            : const Color(0xFF4CAF50);
+    
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(32),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            const Color(0xFF1C2833),
+            const Color(0xFF0D1B2A),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: winnerColor,
+          width: 3,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: winnerColor.withOpacity(0.3),
+            blurRadius: 20,
+            spreadRadius: 2,
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Expanded(
-            flex: 2,
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 16,
-                color: Colors.white70,
-                fontWeight: FontWeight.w500,
+          // Winner announcement
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  winnerColor,
+                  winnerColor.withOpacity(0.7),
+                ],
               ),
+              borderRadius: BorderRadius.circular(16),
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  _winner == 'tie' ? Icons.handshake : Icons.emoji_events,
+                  color: Colors.white,
+                  size: 40,
+                ),
+                const SizedBox(width: 16),
+                Text(
+                  _result,
+                  style: const TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                    letterSpacing: 2,
+                  ),
+                ),
+              ],
             ),
           ),
-          Expanded(
-            flex: 3,
-            child: Text(
-              value,
-              style: TextStyle(
-                fontSize: isPercentage ? 20 : 18,
-                color: isPercentage ? const Color(0xFF00E5FF) : Colors.white,
-                fontWeight: FontWeight.bold,
+          
+          const SizedBox(height: 32),
+          
+          // Player 1 hand
+          _buildHandResult(
+            playerName: 'PLAYER 1',
+            handDescription: _player1Hand,
+            color: const Color(0xFF00E5FF),
+            isWinner: _winner == 'player1',
+            cards: _player1Cards,
+          ),
+          
+          const SizedBox(height: 24),
+          
+          // VS divider
+          Row(
+            children: [
+              Expanded(child: Divider(color: Colors.white30, thickness: 2)),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Text(
+                  'VS',
+                  style: TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white60,
+                    letterSpacing: 2,
+                  ),
+                ),
               ),
+              Expanded(child: Divider(color: Colors.white30, thickness: 2)),
+            ],
+          ),
+          
+          const SizedBox(height: 24),
+          
+          // Player 2 hand
+          _buildHandResult(
+            playerName: 'PLAYER 2',
+            handDescription: _player2Hand,
+            color: const Color(0xFFFF5722),
+            isWinner: _winner == 'player2',
+            cards: _player2Cards,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildProbabilityResult() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(32),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            const Color(0xFF1C2833),
+            const Color(0xFF0D1B2A),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: const Color(0xFF00E5FF),
+          width: 3,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF00E5FF).withOpacity(0.3),
+            blurRadius: 20,
+            spreadRadius: 2,
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Icon(Icons.show_chart, size: 64, color: const Color(0xFF00E5FF)),
+          const SizedBox(height: 16),
+          Text(
+            'WIN PROBABILITY',
+            style: TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+              color: const Color(0xFF00E5FF),
+              letterSpacing: 2,
+            ),
+          ),
+          const SizedBox(height: 32),
+          _buildProbabilityBar('WIN', _winProbability, const Color(0xFF4CAF50)),
+          const SizedBox(height: 16),
+          _buildProbabilityBar('TIE', _tieProbability, const Color(0xFFFFC107)),
+          const SizedBox(height: 16),
+          _buildProbabilityBar('LOSS', _lossProbability, const Color(0xFFF44336)),
+          const SizedBox(height: 24),
+          Text(
+            _result,
+            style: const TextStyle(
+              fontSize: 14,
+              color: Colors.white60,
             ),
           ),
         ],
-      );
-    }
-    return Text(
-      line,
-      style: const TextStyle(
-        fontSize: 16,
-        color: Colors.white,
-        fontWeight: FontWeight.w500,
+      ),
+    );
+  }
+
+  Widget _buildProbabilityBar(String label, double probability, Color color) {
+    final percentage = (probability * 100).toStringAsFixed(2);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+            ),
+            Text(
+              '$percentage%',
+              style: TextStyle(
+                fontSize: 24,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: LinearProgressIndicator(
+            value: probability,
+            minHeight: 24,
+            backgroundColor: Colors.white10,
+            valueColor: AlwaysStoppedAnimation<Color>(color),
+          ),
+        ),
+      ],
+    );
+  }
+  
+  Widget _buildHandResult({
+    required String playerName,
+    required String handDescription,
+    required Color color,
+    required bool isWinner,
+    required List<String> cards,
+  }) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: isWinner ? color.withOpacity(0.15) : Colors.white.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isWinner ? color : Colors.white30,
+          width: isWinner ? 3 : 1,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                isWinner ? Icons.star : Icons.person,
+                color: color,
+                size: 24,
+              ),
+              const SizedBox(width: 12),
+              Text(
+                playerName,
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: color,
+                  letterSpacing: 1.5,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            handDescription,
+            style: const TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: Colors.white,
+              height: 1.4,
+            ),
+          ),
+          if (cards.isNotEmpty) ...[  
+            const SizedBox(height: 16),
+            Text(
+              'Best 5-Card Hand',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: color.withOpacity(0.7),
+                letterSpacing: 1,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: cards.map((card) => Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF0A1929),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(
+                    color: color.withOpacity(0.3),
+                    width: 1,
+                  ),
+                ),
+                child: Text(
+                  _convertToExcelFormat(card),
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              )).toList(),
+            ),
+          ],
+        ],
       ),
     );
   }

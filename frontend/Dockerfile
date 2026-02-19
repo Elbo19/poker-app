@@ -1,8 +1,26 @@
-# Use nginx to serve the static files
+# Stage 1: Build Flutter web app
+FROM ghcr.io/cirruslabs/flutter:stable AS builder
+
+# Set working directory
+WORKDIR /app
+
+# Copy pubspec files
+COPY pubspec.yaml pubspec.lock* ./
+
+# Get dependencies
+RUN flutter pub get
+
+# Copy the rest of the app
+COPY . .
+
+# Build web app
+RUN flutter build web --release
+
+# Stage 2: Serve with nginx
 FROM nginx:alpine
 
 # Copy the built Flutter web app to nginx html directory
-COPY build/web /usr/share/nginx/html
+COPY --from=builder /app/build/web /usr/share/nginx/html
 
 # Copy custom nginx configuration
 COPY nginx.conf /etc/nginx/conf.d/default.conf

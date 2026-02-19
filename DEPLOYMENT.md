@@ -134,7 +134,7 @@ gcloud artifacts docker images delete us-central1-docker.pkg.dev/pocker-487519/p
 ## Current Status
 
 ✅ Backend deployed on GKE at **http://136.113.179.68**
-✅ Frontend running locally on http://localhost:8081
+✅ Frontend configured for deployment at **http://34.28.159.31**
 ✅ All 55 test cases passing
 ✅ Visual playing cards implemented
 ✅ Blue theme applied
@@ -145,6 +145,62 @@ gcloud artifacts docker images delete us-central1-docker.pkg.dev/pocker-487519/p
 - Health: http://136.113.179.68/health
 - Evaluate: http://136.113.179.68/api/evaluate
 - Probability: http://136.113.179.68/api/probability
+
+## Deploy Frontend to GKE
+
+### Quick Frontend Deploy
+
+```bash
+cd /Users/elbetel/projects/poker-app
+chmod +x deploy-frontend.sh
+./deploy-frontend.sh
+```
+
+The script will:
+- Reserve static IP 34.28.159.31 for the frontend
+- Build Flutter web application
+- Build and push Docker image to Artifact Registry
+- Deploy to GKE cluster
+- Configure LoadBalancer with static IP
+- Display the frontend URL
+
+### Manual Frontend Deployment
+
+```bash
+# 1. Reserve static IP
+gcloud compute addresses create poker-frontend-ip \
+  --region=us-central1 \
+  --addresses=34.28.159.31
+
+# 2. Build Flutter web app
+cd frontend
+docker build --platform linux/amd64 -t poker-frontend:latest .
+cd ..
+
+# 3. Tag and push to Artifact Registry
+docker tag poker-frontend:latest \
+  us-central1-docker.pkg.dev/pocker-487519/poker-repo/poker-frontend:latest
+docker push us-central1-docker.pkg.dev/pocker-487519/poker-repo/poker-frontend:latest
+
+# 4. Deploy to Kubernetes
+kubectl apply -f k8s/frontend-deployment.yaml
+
+# 5. Check deployment status
+kubectl get service poker-frontend-service
+kubectl get pods -l app=poker-frontend
+```
+
+### Update Backend URL (if needed)
+
+If your backend IP changes, update [frontend/lib/main.dart](frontend/lib/main.dart#L238-L240):
+
+```dart
+final String apiUrl = kDebugMode 
+    ? 'http://localhost:8080'
+    : 'http://YOUR_BACKEND_IP';
+```
+
+Then rebuild and redeploy the frontend.
 
 ## Test the Live API
 

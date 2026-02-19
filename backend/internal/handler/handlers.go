@@ -137,13 +137,15 @@ type CompareRequest struct {
 
 // CompareResponse represents the response for /api/compare
 type CompareResponse struct {
-	Player1Hand        string `json:"player1Hand"`
-	Player1Description string `json:"player1Description"`
-	Player2Hand        string `json:"player2Hand"`
-	Player2Description string `json:"player2Description"`
-	Winner             string `json:"winner"`
-	Success            bool   `json:"success"`
-	Error              string `json:"error,omitempty"`
+	Player1Hand        string   `json:"player1Hand"`
+	Player1Description string   `json:"player1Description"`
+	Player1Cards       []string `json:"player1Cards"`
+	Player2Hand        string   `json:"player2Hand"`
+	Player2Description string   `json:"player2Description"`
+	Player2Cards       []string `json:"player2Cards"`
+	Winner             string   `json:"winner"`
+	Success            bool     `json:"success"`
+	Error              string   `json:"error,omitempty"`
 }
 
 // CompareHandler handles hand comparison requests
@@ -183,6 +185,18 @@ func CompareHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check for duplicate cards
+	// In Texas Hold'em, players share community cards, so we only need to check:
+	// 1. No duplicates in player 1's hole cards
+	// 2. No duplicates in player 2's hole cards
+	// 3. No overlap between player 1 hole cards and player 2 hole cards
+	// 4. No overlap between hole cards and community cards (for each player)
+	allUniqueCards := append(append(p1HoleCards, p2HoleCards...), p1CommunityCards...)
+	if hasDuplicates(allUniqueCards) {
+		sendError(w, "Duplicate cards detected", http.StatusBadRequest)
+		return
+	}
+
 	// Evaluate both hands
 	p1AllCards := append(p1HoleCards, p1CommunityCards...)
 	p2AllCards := append(p2HoleCards, p2CommunityCards...)
@@ -216,11 +230,24 @@ func CompareHandler(w http.ResponseWriter, r *http.Request) {
 		winner = "tie"
 	}
 
+	// Build card strings for both players
+	player1CardStrings := make([]string, len(hand1.Cards))
+	for i, card := range hand1.Cards {
+		player1CardStrings[i] = card.String()
+	}
+
+	player2CardStrings := make([]string, len(hand2.Cards))
+	for i, card := range hand2.Cards {
+		player2CardStrings[i] = card.String()
+	}
+
 	response := CompareResponse{
 		Player1Hand:        hand1.Rank.String(),
 		Player1Description: hand1.Description,
+		Player1Cards:       player1CardStrings,
 		Player2Hand:        hand2.Rank.String(),
 		Player2Description: hand2.Description,
+		Player2Cards:       player2CardStrings,
 		Winner:             winner,
 		Success:            true,
 	}
@@ -293,6 +320,19 @@ func ProbabilityHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+// hasDuplicates checks if there are duplicate cards in the slice
+func hasDuplicates(cards []poker.Card) bool {
+	seen := make(map[string]bool)
+	for _, card := range cards {
+		key := fmt.Sprintf("%d%s", card.Rank, card.Suit)
+		if seen[key] {
+			return true
+		}
+		seen[key] = true
+	}
+	return false
 }
 
 // sendError sends an error response
